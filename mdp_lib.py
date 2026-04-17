@@ -136,37 +136,41 @@ def chain_mdp(n: int = 20, p: float = 0.9, gamma: float = 0.9) -> MDP:
     return MDP(n_states=n, n_actions=2, gamma=gamma, P=P, C=C)
 
 
-def star_mdp(n_leaves: int = 10, gamma: float = 0.9) -> MDP:
-    # State 0 = hub, states 1..n_leaves = leaves
-    n  = 1 + n_leaves
-    na = n_leaves   # hub has n_leaves actions; leaves share same action space
+def random_mdp(n_states: int = 50, n_actions: int = 4, gamma: float = 0.9, density: float = 1.0, seed: int = None) -> MDP:
+    if seed is not None:
+        np.random.seed(seed)
+    
+    if not (0 < density <= 1):
+        raise ValueError("density must be in (0, 1]")
+    
+    P = np.zeros((n_states, n_actions, n_states))
+    
+    for s in range(n_states):
+        for a in range(n_actions):
+            probs = np.random.rand(n_states)
+            
+            if density < 1.0:
+                mask = np.random.rand(n_states) < density
+                probs[~mask] = 0
+            
+            prob_sum = probs.sum()
+            if prob_sum > 0:
+                probs = probs / prob_sum
+            else:
+                probs = np.ones(n_states) / n_states
+            
+            P[s, a, :] = probs
 
-    HUB         = 0
-    REWARD_LEAF = 1   # reaching this leaf costs 0
-
-    P = np.zeros((n, na, n))
-    C = np.ones((n, na))
-
-    # Hub: action a goes to leaf (a+1)
-    for a in range(na):
-        leaf = a + 1
-        P[HUB, a, leaf] = 1.0
-        C[HUB, a] = 0.0 if leaf == REWARD_LEAF else 1.0
-
-    # Leaves: all actions return to hub
-    for leaf in range(1, n_leaves + 1):
-        for a in range(na):
-            P[leaf, a, HUB] = 1.0
-            C[leaf, a] = 1.0
-
-    return MDP(n_states=n, n_actions=na, gamma=gamma, P=P, C=C)
+    C = np.random.rand(n_states, n_actions)
+    
+    return MDP(n_states=n_states, n_actions=n_actions, gamma=gamma, P=P, C=C)
 
 
 MDP_REGISTRY: Dict[str, Callable[..., MDP]] = {
     "chain": chain_mdp,
     "gambler": gamblers_mdp,
     "gridworld": gridworld_mdp,
-    "star": star_mdp,
+    "random": random_mdp,
 }
 
 def get_mdp(name: str, **kwargs) -> MDP:
