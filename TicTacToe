@@ -3,20 +3,20 @@ from typing import Tuple, List, Dict
 from collections import deque
 
 class TicTacToeEnv:
-    """k×k 井字棋环境"""
+    """k×k 井字棋环境 - 从AI视角建模"""
     
     def __init__(self, k: int = 3):
         self.k = k
         self.board_size = k * k
         
-        self.PLAYER1 = 1  # AI
-        self.PLAYER2 = 2  # 随机玩家
+        self.AI = 1      # AI (X)
+        self.OPPONENT = 2  # 对手 (O)
         self.EMPTY = 0
         
         self._build_state_space()
         
     def _build_state_space(self):
-        """构建状态空间"""
+        """构建所有可达状态"""
         self.all_states = []
         self.state_to_idx = {}
         
@@ -29,7 +29,7 @@ class TicTacToeEnv:
         while queue:
             board = queue.popleft()
             
-            if self._is_game_over(board):
+            if self._is_terminal(board):
                 continue
                 
             current_player = self._get_current_player(board)
@@ -48,202 +48,154 @@ class TicTacToeEnv:
         self.n_states = len(self.all_states)
         self.n_actions = self.board_size
         
-        # 构建转移概率和成本
+        # 构建转移概率和奖励
         self.P = np.zeros((self.n_states, self.n_actions, self.n_states))
-        self.C = np.zeros((self.n_states, self.n_actions))
+        self.R = np.zeros((self.n_states, self.n_actions))  # 奖励，不是成本
         
         self._build_transitions()
-        
+    
     def _get_current_player(self, board):
-        """判断当前轮到哪个玩家"""
-        count1 = board.count(self.PLAYER1)
-        count2 = board.count(self.PLAYER2)
+        """判断当前轮到谁"""
+        count_ai = board.count(self.AI)
+        count_opp = board.count(self.OPPONENT)
         
-        if count1 == count2:
-            return self.PLAYER1
+        if count_ai == count_opp:
+            return self.AI
         else:
-            return self.PLAYER2
+            return self.OPPONENT
     
     def _check_win(self, board, player):
         """检查指定玩家是否获胜"""
-        # 检查行
+        # 行
         for i in range(self.k):
             if all(board[i * self.k + j] == player for j in range(self.k)):
                 return True
         
-        # 检查列
+        # 列
         for j in range(self.k):
             if all(board[i * self.k + j] == player for i in range(self.k)):
                 return True
         
-        # 检查主对角线
+        # 主对角线
         if all(board[i * self.k + i] == player for i in range(self.k)):
             return True
         
-        # 检查副对角线
+        # 副对角线
         if all(board[i * self.k + (self.k - 1 - i)] == player for i in range(self.k)):
             return True
         
         return False
     
-    def _is_game_over(self, board):
-        """检查游戏是否结束"""
-        if self._check_win(board, self.PLAYER1) or self._check_win(board, self.PLAYER2):
+    def _is_terminal(self, board):
+        """检查是否为终局状态"""
+        if self._check_win(board, self.AI) or self._check_win(board, self.OPPONENT):
             return True
-        
         if all(cell != self.EMPTY for cell in board):
             return True
-        
         return False
     
-    def _get_reward(self, board, action, next_board):
-        """计算奖励"""
-        if self._check_win(next_board, self.PLAYER1):
-            return 1.0
-        elif self._check_win(next_board, self.PLAYER2):
-            return -1.0
+    def _get_reward(self, board):
+        """从AI视角获取终局奖励"""
+        if self._check_win(board, self.AI):
+            return 1.0      # AI赢了
+        elif self._check_win(board, self.OPPONENT):
+            return -1.0     # AI输了
         else:
-            return 0.0
+            return 0.0      # 平局
     
     def _build_transitions(self):
         """构建转移概率矩阵"""
         for s_idx, board in enumerate(self.all_states):
-            if self._is_game_over(board):
+            # 终局状态：吸收态，奖励0
+            if self._is_terminal(board):
                 for a in range(self.n_actions):
                     self.P[s_idx, a, s_idx] = 1.0
-                    self.C[s_idx, a] = 0.0
+                    self.R[s_idx, a] = self._get_reward(board)
                 continue
             
             current_player = self._get_current_player(board)
             
             for a in range(self.n_actions):
+                # 无效动作（位置已有棋子）：留在原地，负奖励惩罚
                 if board[a] != self.EMPTY:
                     self.P[s_idx, a, s_idx] = 1.0
-                    self.C[s_idx, a] = 0.0
+                    self.R[s_idx, a] = -0.1  # 惩罚无效动作
                     continue
                 
-                if current_player == self.PLAYER1:
-                    # AI的回合：确定性转移
+                if current_player == self.AI:
+                    # AI回合：确定性转移
                     new_board_list = list(board)
-                    new_board_list[a] = self.PLAYER1
+                    new_board_list[a] = self.AI
                     new_board = tuple(new_board_list)
                     next_idx = self.state_to_idx[new_board]
                     self.P[s_idx, a, next_idx] = 1.0
-                    self.C[s_idx, a] = self._get_reward(board, a, new_board)
+                    
+                    # 如果新状态是终局，奖励就是终局奖励；否则为0（延迟奖励）
+                    if self._is_terminal(new_board):
+                        self.R[s_idx, a] = self._get_reward(new_board)
+                    else:
+                        self.R[s_idx, a] = 0.0
                 
                 else:
-                    # 随机玩家的回合：均匀随机选择
+                    # 对手回合：对手均匀随机选择空位
                     empty_positions = [pos for pos in range(self.board_size) if board[pos] == self.EMPTY]
-                    
-                    if not empty_positions:
-                        self.P[s_idx, a, s_idx] = 1.0
-                        self.C[s_idx, a] = 0.0
-                        continue
-                    
                     prob_each = 1.0 / len(empty_positions)
                     
                     for pos in empty_positions:
                         new_board_list = list(board)
-                        new_board_list[pos] = self.PLAYER2
+                        new_board_list[pos] = self.OPPONENT
                         new_board = tuple(new_board_list)
                         next_idx = self.state_to_idx[new_board]
                         self.P[s_idx, a, next_idx] += prob_each
                     
-                    # 计算期望奖励
-                    expected_reward = 0.0
-                    for pos in empty_positions:
-                        new_board_list = list(board)
-                        new_board_list[pos] = self.PLAYER2
-                        new_board = tuple(new_board_list)
-                        expected_reward += prob_each * self._get_reward(board, a, new_board)
-                    self.C[s_idx, a] = expected_reward
+                    # 对手回合的即时奖励为0，奖励在终局时才给
+                    self.R[s_idx, a] = 0.0
     
     def render(self, board):
         """打印棋盘"""
+        symbols = {self.EMPTY: '.', self.AI: 'X', self.OPPONENT: 'O'}
         for i in range(self.k):
-            row = []
-            for j in range(self.k):
-                cell = board[i * self.k + j]
-                if cell == self.EMPTY:
-                    row.append('.')
-                elif cell == self.PLAYER1:
-                    row.append('X')
-                else:
-                    row.append('O')
+            row = [symbols[board[i * self.k + j]] for j in range(self.k)]
             print(' '.join(row))
         print()
 
 
 class StandardValueIteration:
-    """
-    Approach 1: 标准值迭代 (Classic Value Iteration)
-    
-    算法描述:
-    y_i^{k+1} = min_{j∈A_i} {c_j + γ p_j^T y^k}, ∀i
-    
-    特点:
-    - 使用上一轮迭代的所有状态值来更新当前轮
-    - 所有状态同步更新
-    - 保证收敛到最优值函数
-    """
+    """标准值迭代 - 最大化奖励"""
     
     def __init__(self, env, gamma=0.99, theta=1e-6):
         self.env = env
         self.gamma = gamma
         self.theta = theta
-        self.V = np.zeros(env.n_states)  # 初始值函数
-        self.history = []  # 记录每轮的误差
-        
+        self.V = np.zeros(env.n_states)
+        self.history = []
+    
     def _compute_best_value(self, s, V):
-        """
-        计算状态 s 的最优值
-        
-        Args:
-            s: 状态索引
-            V: 当前值函数
-            
-        Returns:
-            best_action: 最优动作
-            best_value: 最优值
-        """
+        """计算状态s的最优值（最大化奖励）"""
         best_value = float('-inf')
         best_action = 0
         
         for a in range(self.env.n_actions):
-            # 计算动作 a 的值
-            value = 0
+            value = 0.0
             for next_s in range(self.env.n_states):
                 prob = self.env.P[s, a, next_s]
                 if prob > 0:
-                    value += prob * (self.env.C[s, a] + self.gamma * V[next_s])
+                    value += prob * (self.env.R[s, a] + self.gamma * V[next_s])
             
-            # 因为是最大化奖励，所以取最大值
             if value > best_value:
                 best_value = value
                 best_action = a
-                
+        
         return best_action, best_value
     
     def solve(self, max_iter=10000, verbose=True):
-        """
-        使用标准值迭代求解最优策略
-        
-        Args:
-            max_iter: 最大迭代次数
-            verbose: 是否打印进度
-            
-        Returns:
-            policy: 最优策略
-            V: 最优值函数
-            iterations: 实际迭代次数
-            history: 每轮误差历史
-        """
+        """求解最优策略"""
         iteration = 0
         self.history = []
         
         if verbose:
             print("=" * 60)
-            print("Approach 1: 标准值迭代 (Classic Value Iteration)")
+            print("标准值迭代求解井字棋")
             print("=" * 60)
             print(f"状态数: {self.env.n_states}")
             print(f"动作数: {self.env.n_actions}")
@@ -252,223 +204,112 @@ class StandardValueIteration:
             print()
         
         while iteration < max_iter:
-            # 使用上一轮的值函数 V 来计算新的值函数 V_new
             V_new = np.zeros(self.env.n_states)
             delta = 0
             
-            # 对所有状态进行同步更新
             for s in range(self.env.n_states):
                 _, best_value = self._compute_best_value(s, self.V)
                 V_new[s] = best_value
-                
-                # 计算变化量
-                state_delta = np.abs(best_value - self.V[s])
-                if state_delta > delta:
-                    delta = state_delta
+                delta = max(delta, abs(best_value - self.V[s]))
             
-            # 记录历史
             self.history.append(delta)
-            
-            # 更新值函数
             self.V = V_new
             
             if verbose and (iteration % 10 == 0 or delta < self.theta):
                 print(f"迭代 {iteration:4d}: delta = {delta:.8f}")
             
-            # 检查收敛
             if delta < self.theta:
                 if verbose:
                     print(f"\n✓ 收敛于第 {iteration} 次迭代")
                 break
-                
+            
             iteration += 1
         
-        if iteration >= max_iter:
-            if verbose:
-                print(f"\n⚠ 达到最大迭代次数 {max_iter}，未完全收敛")
-        
-        # 提取最优策略
+        # 提取策略
         policy = np.zeros(self.env.n_states, dtype=int)
         for s in range(self.env.n_states):
             policy[s], _ = self._compute_best_value(s, self.V)
-            
+        
         return policy, self.V, iteration, self.history
 
 
-def evaluate_policy(env, policy, n_games=100, verbose=False):
-    """评估策略性能"""
+def evaluate_policy(env, policy, n_games=100, verbose=True):
+    """评估策略"""
     wins = 0
     losses = 0
     draws = 0
     
-    for game in range(n_games):
-        current_board = tuple([env.EMPTY] * env.board_size)
+    for _ in range(n_games):
+        board = tuple([env.EMPTY] * env.board_size)
         
-        while not env._is_game_over(current_board):
-            current_player = env._get_current_player(current_board)
-            state_idx = env.state_to_idx[current_board]
+        while not env._is_terminal(board):
+            current_player = env._get_current_player(board)
+            state_idx = env.state_to_idx[board]
             
-            if current_player == env.PLAYER1:
+            if current_player == env.AI:
                 action = policy[state_idx]
             else:
-                empty_positions = [pos for pos in range(env.board_size) if current_board[pos] == env.EMPTY]
-                if not empty_positions:
+                empty = [p for p in range(env.board_size) if board[p] == env.EMPTY]
+                if not empty:
                     break
-                action = np.random.choice(empty_positions)
+                action = np.random.choice(empty)
             
-            new_board_list = list(current_board)
-            new_board_list[action] = current_player
-            current_board = tuple(new_board_list)
+            new_board = list(board)
+            new_board[action] = current_player
+            board = tuple(new_board)
         
-        if env._check_win(current_board, env.PLAYER1):
+        if env._check_win(board, env.AI):
             wins += 1
-        elif env._check_win(current_board, env.PLAYER2):
+        elif env._check_win(board, env.OPPONENT):
             losses += 1
         else:
             draws += 1
     
     if verbose:
-        print(f"\n{'='*40}")
-        print(f"策略评估 ({n_games} 局)")
-        print(f"{'='*40}")
-        print(f"胜场: {wins} ({wins/n_games*100:.1f}%)")
-        print(f"负场: {losses} ({losses/n_games*100:.1f}%)")
-        print(f"平局: {draws} ({draws/n_games*100:.1f}%)")
-        print(f"{'='*40}")
+        print(f"\n策略评估 ({n_games} 局)")
+        print(f"  胜: {wins} ({wins/n_games*100:.1f}%)")
+        print(f"  负: {losses} ({losses/n_games*100:.1f}%)")
+        print(f"  平: {draws} ({draws/n_games*100:.1f}%)")
     
     return wins, losses, draws
 
 
-def play_game(env, policy, render=True):
-    """演示一局游戏"""
-    current_board = tuple([env.EMPTY] * env.board_size)
+def play_game(env, policy):
+    """演示一局"""
+    board = tuple([env.EMPTY] * env.board_size)
     
-    if render:
-        print("\n" + "=" * 40)
-        print("新游戏开始！")
-        print("AI (X) vs 随机玩家 (O)")
-        print("=" * 40)
-        print()
-        env.render(current_board)
+    print("\n新游戏：AI (X) vs 随机对手 (O)")
+    env.render(board)
     
-    move_count = 0
-    
-    while not env._is_game_over(current_board):
-        current_player = env._get_current_player(current_board)
-        state_idx = env.state_to_idx[current_board]
+    while not env._is_terminal(board):
+        current_player = env._get_current_player(board)
+        state_idx = env.state_to_idx[board]
         
-        if current_player == env.PLAYER1:
+        if current_player == env.AI:
             action = policy[state_idx]
-            if render:
-                print(f"第 {move_count//2 + 1} 轮 - AI 选择位置: {action}")
+            print(f"AI 下在位置 {action}")
         else:
-            empty_positions = [pos for pos in range(env.board_size) if current_board[pos] == env.EMPTY]
-            if not empty_positions:
-                break
-            action = np.random.choice(empty_positions)
-            if render:
-                print(f"第 {move_count//2 + 1} 轮 - 随机玩家选择位置: {action}")
+            empty = [p for p in range(env.board_size) if board[p] == env.EMPTY]
+            action = np.random.choice(empty)
+            print(f"对手 下在位置 {action}")
         
-        new_board_list = list(current_board)
-        new_board_list[action] = current_player
-        current_board = tuple(new_board_list)
-        move_count += 1
-        
-        if render:
-            env.render(current_board)
+        new_board = list(board)
+        new_board[action] = current_player
+        board = tuple(new_board)
+        env.render(board)
     
-    # 输出结果
-    if render:
-        print("-" * 40)
-        if env._check_win(current_board, env.PLAYER1):
-            print("🎉 AI 获胜！ 🎉")
-        elif env._check_win(current_board, env.PLAYER2):
-            print("😢 随机玩家 获胜！")
-        else:
-            print("🤝 平局！")
-        print("=" * 40)
-    
-    return current_board
+    if env._check_win(board, env.AI):
+        print("🎉 AI 获胜！")
+    elif env._check_win(board, env.OPPONENT):
+        print("😢 AI 输了")
+    else:
+        print("🤝 平局")
 
 
-def plot_convergence(history):
-    """绘制收敛曲线"""
-    import matplotlib.pyplot as plt
-    
-    plt.figure(figsize=(10, 6))
-    plt.semilogy(history, linewidth=2)
-    plt.xlabel('迭代次数', fontsize=12)
-    plt.ylabel('误差 (delta)', fontsize=12)
-    plt.title('标准值迭代 (Approach 1) 收敛曲线', fontsize=14)
-    plt.grid(True, alpha=0.3)
-    plt.tight_layout()
-    plt.show()
-
-
-# 主程序
 if __name__ == "__main__":
-    print("=" * 60)
-    print("使用 Approach 1 (标准值迭代) 求解井字棋")
-    print("=" * 60)
-    
-    # 创建 3x3 井字棋环境
-    print("\n创建 3x3 井字棋环境...")
     env = TicTacToeEnv(k=3)
-    print(f"✓ 环境创建完成")
-    print(f"  - 状态数: {env.n_states}")
-    print(f"  - 动作数: {env.n_actions}")
-    print(f"  - 棋盘大小: {env.k}×{env.k}")
+    solver = StandardValueIteration(env, gamma=0.99, theta=1e-6)
+    policy, V, iterations, history = solver.solve(verbose=True)
     
-    # 创建标准值迭代求解器
-    solver = StandardValueIteration(
-        env=env,
-        gamma=0.99,      # 折扣因子
-        theta=1e-6       # 收敛阈值
-    )
-    
-    # 求解最优策略
-    policy, V, iterations, history = solver.solve(max_iter=10000, verbose=True)
-    
-    # 评估策略
-    print("\n评估策略与随机玩家对战...")
-    wins, losses, draws = evaluate_policy(env, policy, n_games=500, verbose=True)
-    
-    # 计算胜率
-    win_rate = wins / 500 * 100
-    print(f"\n最终结果:")
-    print(f"  - 胜率: {win_rate:.1f}%")
-    print(f"  - 迭代次数: {iterations}")
-    print(f"  - 最终误差: {history[-1]:.2e}")
-    
-    # 演示一局游戏
-    play_game(env, policy, render=True)
-    
-    # 绘制收敛曲线
-    try:
-        plot_convergence(history)
-    except:
-        print("\n(如需查看收敛曲线图，请安装 matplotlib)")
-    
-    # 可选：分析策略质量
-    print("\n" + "=" * 60)
-    print("策略分析")
-    print("=" * 60)
-    
-    # 检查几个关键状态的值函数
-    print("\n关键状态的值函数:")
-    
-    # 空棋盘
-    empty_board = tuple([env.EMPTY] * env.board_size)
-    empty_idx = env.state_to_idx[empty_board]
-    print(f"  空棋盘: V = {V[empty_idx]:.4f}")
-    
-    # 检查第一手下在中心的值
-    center = 4 if env.k == 3 else (env.k * env.k // 2)
-    board_center = list(empty_board)
-    board_center[center] = env.PLAYER1
-    board_center = tuple(board_center)
-    center_idx = env.state_to_idx.get(board_center, -1)
-    if center_idx >= 0:
-        print(f"  AI 下在中心后: V = {V[center_idx]:.4f}")
-    
-    print("\n完成！")
+    evaluate_policy(env, policy, n_games=500)
+    play_game(env, policy)
