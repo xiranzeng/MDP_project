@@ -1,0 +1,180 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import time
+from collections import defaultdict
+from scipy import stats
+import pandas as pd
+from typing import Dict, List, Tuple, Callable
+from mdp_lib import gamblers_mdp, gridworld_mdp, chain_mdp, star_mdp
+from src.approach4_CyclicVI import Agent as CyclicVIAgent
+from src.approach5_RPCyclicVI import Agent as RPCyclicVIAgent
+from src.policy_iteration import PolicyIterationAgent
+from src.qlearning import QLearningAgent
+from VI_approach1 import Agent as VIAgent
+from VI_approach2 import Agent as RandomVIAgent
+from InfluenceTree import InfluenceTreeAgent as InfluenceTreeAgent
+
+def compute_bellman_residual(V, env):
+    """计算 Bellman 残差"""
+    TV = np.zeros(env.n_states)
+    for s in range(env.n_states):
+        best_value = float('inf')
+        for a in range(env.n_actions):
+            value = env.C[s, a]
+            for ns in range(env.n_states):
+                prob = env.P[s, a, ns]
+                if prob > 0:
+                    value += prob * env.gamma * V[ns]
+            best_value = min(best_value, value)
+        TV[s] = best_value
+    return np.max(np.abs(V - TV))
+
+
+def run_algorithm_multi_times(agent_class, env, n_runs=30):
+    """多次运行算法，收集迭代次数"""
+    results = []
+    for run in range(n_runs):
+        np.random.seed(run * 1000)
+        try:
+            agent = agent_class(env)
+            start = time.time()
+            _, values = agent.optimize(theta=1e-6)
+            runtime = time.time() - start
+            iterations = agent.round_num if hasattr(agent, 'round_num') else 0
+            residual = compute_bellman_residual(values, env)
+            results.append({
+                'iterations': iterations,
+                'runtime': runtime,
+                'residual': residual,
+                'success': True
+            })
+        except Exception as e:
+            print(f"  Error: {e}")
+            results.append({'iterations': np.nan, 'runtime': np.nan, 'residual': np.nan, 'success': False})
+    return results
+
+
+def paired_ttest(data1, data2):
+    """配对 t 检验"""
+    d1 = [x['iterations'] for x in data1 if not np.isnan(x['iterations'])]
+    d2 = [x['iterations'] for x in data2 if not np.isnan(x['iterations'])]
+    
+    # 确保长度相同
+    min_len = min(len(d1), len(d2))
+    d1 = d1[:min_len]
+    d2 = d2[:min_len]
+    
+    if len(d1) < 2:
+        return {'p_value': np.nan, 'significant': False}
+    
+    t_stat, p_value = stats.ttest_rel(d1, d2)
+    
+    if p_value < 0.001:
+        stars = '***'
+    elif p_value < 0.01:
+        stars = '**'
+    elif p_value < 0.05:
+        stars = '*'
+    else:
+        stars = 'ns'
+    
+    return {
+        't_statistic': t_stat,
+        'p_value': p_value,
+        'significant': p_value < 0.05,
+        'stars': stars,
+        'mean_diff': np.mean(d1) - np.mean(d2)
+    }
+
+
+def main():
+    print("="*70)
+    print("6 种算法统计显著性检验 (t-test)")
+    print("="*70)
+    
+    # 创建环境
+    env = get_mdp('chain', n=20, gamma=0.9)
+    print(f"\n环境: Chain MDP (states={env.n_states}, actions={env.n_actions})")
+    
+    # 定义 6 种算法
+    algorithms = {
+        'Value Iteration': VIAgent,
+        'RandomVI': RandomVIAgent,
+        'InfluenceTree': InfluenceTreeAgent,
+        'CyclicVI': CyclicVIAgent,
+        'RPCyclicVI': RPCyclicVIAgent,
+        'Policy Iteration': PolicyIterationAgent,
+        'Q-Learning': QLearningAgent,
+    }
+    
+    n_runs = 30
+    all_results = {}
+    
+    # 运行所有算法
+    for name, agent_class in algorithms.items():
+        print(f"\n运行 {name}...")
+        results = run_algorithm_multi_times(agent_class, env, n_runs=n_runs)
+        all_results[name] = results
+        
+        # 计算统计
+        iters = [r['iterations'] for r in results if r['success']]
+        if iters:
+            print(f"  迭代次数: {np.mean(iters):.1f} ± {np.std(iters):.1f}")
+    
+    # 两两 t 检验
+    print("\n" + "="*70)
+    print("两两 t 检验结果 (p-value)")
+    print("="*70)
+    
+    algo_names = list(algorithms.keys())
+    n = len(algo_names)
+    
+    # 打印表头
+    print(f"{'':<20}", end='')
+    for name in algo_names:
+        print(f"{name[:12]:<12}", end='')
+    print()
+    
+    for i, name1 in enumerate(algo_names):
+        print(f"{name1:<20}", end='')
+        for j, name2 in enumerate(algo_names):
+            if i == j:
+                print(f"{'---':<12}", end='')
+            else:
+                test = paired_ttest(all_results[name1], all_results[name2])
+                p_val = test['p_value']
+                stars = test['stars']
+                if np.isnan(p_val):
+                    print(f"{'N/A':<12}", end='')
+                else:
+                    print(f"{p_val:.2e}{stars:<8}", end='')
+        print()
+    
+    # 生成箱线图
+    plt.figure(figsize=(12, 6))
+    data_to_plot = []
+    labels = []
+    for name in algo_names:
+        iters = [r['iterations'] for r in all_results[name] if r['success']]
+        data_to_plot.append(iters)
+        labels.append(name)
+    
+    bp = plt.boxplot(data_to_plot, labels=labels, patch_artist=True)
+    colors = plt.cm.Set3(np.linspace(0, 1, len(algo_names)))
+    for patch, color in zip(bp['boxes'], colors):
+        patch.set_facecolor(color)
+    
+    plt.ylabel('迭代次数', fontsize=12)
+    plt.title('6 种算法性能分布对比 (n=30 runs)', fontsize=14)
+    plt.xticks(rotation=45, ha='right')
+    plt.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig('ttest_6algorithms.png', dpi=150)
+    plt.show()
+    
+    print("\n✅ 箱线图已保存到: ttest_6algorithms.png")
+
+
+if __name__ == "__main__":
+    main()
