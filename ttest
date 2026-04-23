@@ -6,7 +6,7 @@ from collections import defaultdict
 from scipy import stats
 import pandas as pd
 from typing import Dict, List, Tuple, Callable
-from mdp_lib import gamblers_mdp, gridworld_mdp, chain_mdp, star_mdp
+from mdp_lib import gamblers_mdp, gridworld_mdp, chain_mdp, random_mdp
 from src.approach4_CyclicVI import Agent as CyclicVIAgent
 from src.approach5_RPCyclicVI import Agent as RPCyclicVIAgent
 from src.policy_iteration import PolicyIterationAgent
