@@ -273,7 +273,7 @@ def analyze_nash_and_strategy(policy, env, algorithm_name):
     # --- 1. 针对随机对手的最优策略（起点走法）---
     empty_board = tuple([env.EMPTY] * env.board_size)
     start_idx = env.state_to_idx[empty_board]
-    best_start_action = policy[start_idx]
+    best_start_action = int(policy[start_idx])
     
     print(f"1. 针对随机对手的最优策略 (算法找到):")
     print(f"   空棋盘时 AI 的第一步下在位置: {best_start_action}")
@@ -315,6 +315,8 @@ def run_tictactoe_experiment():
     
     algorithms = {
         'Value Iteration': ValueIterationAgent,
+        'RandomVI': RandomVIAgent,
+        'Influence Tree': InfluenceTreeAgent,
         'CyclicVI': CyclicVIAgent,
         'RPCyclicVI': RPCyclicVIAgent,
         'Policy Iteration': PolicyIterationAgent,
@@ -333,9 +335,9 @@ def run_tictactoe_experiment():
         
         try:
             if name == 'Q-Learning':
-                policy, values = agent.optimize(episodes=5000, max_steps_per_episode=20)
+                policy, values = agent.optimize(episodes=2000, max_steps_per_episode=20)
             else:
-                policy, values = agent.optimize(theta=1e-6)
+                policy, values = agent.optimize(theta=1e-4)
             
             runtime = time.time() - start_time
             iterations = agent.round_num
@@ -376,9 +378,6 @@ def run_tictactoe_experiment():
             print(f"{name:<20} {'FAILED':<8}")
     
     return results
-
-
-
 
 
 if __name__ == "__main__":

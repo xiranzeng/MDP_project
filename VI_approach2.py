@@ -78,6 +78,7 @@ class RandomVIAgent:
                 self.V[s] = new_value
             
             self.round_num += 1
+
             
             if self.round_num % 100 == 0:
                 print(f"  Round {self.round_num}, delta={delta:.6f}")
