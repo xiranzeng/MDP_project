@@ -1,164 +1,126 @@
 # %%
 import numpy as np
-from Env import GridWorld
 
 
-DISCOUNT_FACTOR = 1 # 请根据不同的任务使用具体discount_factor
-
-
-class Agent:
-    def __init__(self, env):
+class ValueIterationAgent:
+    """标准值迭代算法 - 兼容 mdp_lib 和 TicTacToe MDP 接口"""
+    
+    def __init__(self, env, gamma=0.9):
         self.env = env
-        self.V = np.zeros(env.nS)
+        self.gamma = gamma
+        
+        # 兼容两种属性命名
+        if hasattr(env, 'n_states'):
+            self.n_states = env.n_states
+            self.n_actions = env.n_actions
+        else:
+            self.n_states = env.nS
+            self.n_actions = env.nA
+        
+        self.V = np.zeros(self.n_states)
+        self.round_num = 0
+
+    def _get_transitions_and_rewards(self, s, a):
+        """
+        统一获取转移概率和奖励
+        返回: list of (prob, next_state, reward)
+        """
+        # 检查是哪种接口
+        if hasattr(self.env.P, 'shape') and len(self.env.P.shape) == 3:
+            # 新接口：NumPy 数组格式 (来自 mdp_lib 或 TicTacToe)
+            transitions = []
+            for next_s in range(self.n_states):
+                prob = self.env.P[s, a, next_s]
+                if prob > 0:
+                    # 获取奖励（成本取负）
+                    if hasattr(self.env, 'R'):
+                        reward = self.env.R[s, a]
+                    elif hasattr(self.env, 'C'):
+                        reward = -self.env.C[s, a]
+                    else:
+                        reward = 0.0
+                    transitions.append((prob, next_s, reward))
+            return transitions
+        else:
+            # 旧接口：列表格式 (来自 GridWorld)
+            transitions = []
+            for prob, next_state, reward, done in self.env.P[s][a]:
+                transitions.append((prob, next_state, reward))
+            return transitions
 
     def next_best_action(self, s, V):
-        action_values = np.zeros(self.env.nA)
-        for a in range(self.env.nA):
-            for prob, next_state, reward, done in self.env.P[s][a]:
-                action_values[a] += prob * (reward + DISCOUNT_FACTOR * V[next_state])
-        return np.argmax(action_values), np.max(action_values)
+        """返回 (best_action, best_value)"""
+        action_values = np.zeros(self.n_actions)
+        for a in range(self.n_actions):
+            for prob, next_state, reward in self._get_transitions_and_rewards(s, a):
+                action_values[a] += prob * (reward + self.gamma * V[next_state])
+        
+        best_action = np.argmax(action_values)
+        best_value = np.max(action_values)
+        return best_action, best_value
 
-    def optimize(self): # core method
-        THETA = 0.0001
+    def _get_shape(self):
+        """获取环境形状（用于可视化）"""
+        if hasattr(self.env, 'shape'):
+            return self.env.shape
+        elif hasattr(self.env, 'mdp_name'):
+            return (1, self.n_states)
+        else:
+            return (1, self.n_states)
+
+    def optimize(self, theta=1e-4, max_iterations=10000):
+        """核心优化方法"""
+        self.V = np.zeros(self.n_states)
         delta = float("inf")
         round_num = 0
 
-        while delta > THETA:
-            # 循环条件：只要最大变化量大于阈值，就继续迭代,
-            # 当所有状态的价值变化都很小时（≤0.0001），停止迭代
+        while delta > theta and round_num < max_iterations:
             delta = 0
-            # 重置本轮的最大变化量
-            # 准备记录本轮中各状态的变化
-            print("\nValue Iteration: Round " + str(round_num))
-            print(np.reshape(self.V, self.env.shape))
-            for s in range(self.env.nS):
+            V_new = self.V.copy()
+            
+            print(f"\nValue Iteration: Round {round_num}")
+            # 安全地打印值函数
+            try:
+                shape = self._get_shape()
+                print(np.reshape(self.V, shape))
+            except:
+                print(self.V[:10])  # 只打印前10个
+            
+            for s in range(self.n_states):
                 best_action, best_action_value = self.next_best_action(s, self.V)
+                V_new[s] = best_action_value
                 delta = max(delta, np.abs(best_action_value - self.V[s]))
-                self.V[s] = best_action_value
+            
+            self.V = V_new
             round_num += 1
+        
+        self.round_num = round_num
 
-        policy = np.zeros(self.env.nS)
-        for s in range(self.env.nS):
-            best_action, best_action_value = self.next_best_action(s, self.V)
+        policy = np.zeros(self.n_states, dtype=int)
+        for s in range(self.n_states):
+            best_action, _ = self.next_best_action(s, self.V)
             policy[s] = best_action
 
-        return policy
+        return policy, self.V  # 统一返回两个值
 
-
-# env = GridWorld()
-# agent = Agent(env)
-# policy = agent.optimize()
-# print("\nBest Policy")
-# print(np.reshape([env.get_action_name(entry) for entry in policy], env.shape))
-
-# env = GridWorld(wind_prob=.2)
-# agent = Agent(env)
-# policy = agent.optimize()
-# print("\nBest Policy")
-# print(np.reshape([env.get_action_name(entry) for entry in policy], env.shape))
 
 # %%
-from mdp_lib import get_mdp  # 导入同学的MDP
-
-class MDPAdapter:
-    """将同学的MDP适配成你的Env格式"""
+# 测试代码
+if __name__ == "__main__":
+    from tictactoe_mdp import tictactoe_mdp
     
-    def __init__(self, mdp_name, **kwargs):
-        self.mdp = get_mdp(mdp_name, **kwargs)
-        self.nS = self.mdp.n_states
-        self.nA = self.mdp.n_actions
-        
-        # 设置shape用于可视化
-        if mdp_name == "gridworld":
-            self.shape = (kwargs.get('k', 5), kwargs.get('k', 5))
-        elif mdp_name == "chain":
-            self.shape = (1, kwargs.get('n', 20))
-        elif mdp_name == "gambler":
-            goal = kwargs.get('goal', 100)
-            self.shape = (1, goal + 1)
-        else:
-            self.shape = (1, self.nS)
-        
-        # 构建兼容的P表
-        self.P = self._build_transitions()
+    # 创建 TicTacToe MDP
+    mdp = tictactoe_mdp(gamma=0.99)
     
-    def _build_transitions(self):
-        P = []
-        for s in range(self.nS):
-            actions = []
-            for a in range(self.nA):
-                transitions = []
-                for next_s in range(self.nS):
-                    prob = self.mdp.P[s, a, next_s]
-                    if prob > 0:
-                        reward = -self.mdp.C[s, a]  # 代价转奖励
-                        done = (next_s == self.nS - 1)  # 简化判断
-                        transitions.append((prob, next_s, reward, done))
-                if len(transitions) == 0:
-                    transitions.append((1.0, s, 0, False))
-                actions.append(transitions)
-            P.append(actions)
-        return P
+    # 添加兼容属性（让 ValueIterationAgent 能识别）
+    mdp.nS = mdp.n_states
+    mdp.nA = mdp.n_actions
+    mdp.shape = (1, mdp.n_states)
     
-    def get_action_name(self, a):
-        return f"Action_{a}"
-
-# %%
-# 测试1: Chain MDP
-print("="*60)
-print("Testing Chain MDP")
-print("="*60)
-
-env = MDPAdapter("chain", n=50, p=0.9, gamma=0.9)
-DISCOUNT_FACTOR = 0.9  # 重要：覆盖原来的1
-agent = Agent(env)
-policy = agent.optimize()
-
-print("\nFinal Value Function:")
-print(agent.V.reshape(env.shape))
-print("\nFinal Policy (0=RIGHT,1=LEFT):")
-print(policy.reshape(env.shape))
-
-# %%
-print("="*60)
-print("Testing Gambler's MDP")
-print("="*60)
-
-env = MDPAdapter("gambler", goal=50, p_win=0.4, gamma=0.95)
-DISCOUNT_FACTOR = 0.95
-agent = Agent(env)
-policy = agent.optimize()
-
-print("\nValue Function (first 20):", agent.V[:20])
-print("Policy (first 20):", policy[:20])
-
-# %%
-print("="*60)
-print("Testing GridWorld MDP")
-print("="*60)
-
-# env = MDPAdapter("gridworld", k=4, gamma=0.9, slip_prob=0.1)
-DISCOUNT_FACTOR = 0.9
-# agent = Agent(env)
-# policy = agent.optimize()
-
-
-slip_probs = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
-results = {}
-
-for slip_prob in slip_probs:
-    env = MDPAdapter("gridworld", k=5, gamma=0.9, slip_prob=slip_prob)
-    agent = Agent(env)
-    density = (env.P > 0).mean()
-    policy = agent.optimize()
-    results[f'prob={slip_prob}'] = [(density)]
-
-for slip_prob in slip_probs:
-    print(results[slip_prob])
-
-print("\nValue Function:")
-print(agent.V.reshape(env.shape))
-print("\nPolicy (0=UP,1=DOWN,2=LEFT,3=RIGHT):")
-print(policy.reshape(env.shape))
-
-
+    # 运行算法
+    agent = ValueIterationAgent(mdp, gamma=0.99)
+    policy, V = agent.optimize(theta=1e-6)
+    
+    print(f"\n收敛迭代次数: {agent.round_num}")
+    print(f"策略形状: {policy.shape}")
+    print(f"值函数形状: {V.shape}")

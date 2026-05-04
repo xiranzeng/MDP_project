@@ -1,20 +1,43 @@
 import numpy as np
+import time
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+from dataclasses import dataclass
 from typing import Tuple, List, Dict
-from collections import deque
+from collections import deque, defaultdict
+
+from VI_approach1 import ValueIterationAgent
+from VI_approach2 import RandomVIAgent as RandomVIAgent
+from InfluenceTree import InfluenceTreeAgent
+from approach4_CyclicVI import Agent as CyclicVIAgent
+from approach5_RPCyclicVI import Agent as RPCyclicVIAgent
+from policy_iteration import PolicyIterationAgent
+from qlearning import QLearningAgent
+
+
+@dataclass
+class MDP:
+    n_states: int
+    n_actions: int
+    gamma: float
+    P: np.ndarray   # (n_states, n_actions, n_states)
+    C: np.ndarray   # (n_states, n_actions) 成本（奖励的负值）
+
 
 class TicTacToeEnv:
-    """k×k 井字棋环境 - 从AI视角建模"""
+    """3x3 井字棋环境，对手为均匀随机"""
     
-    def __init__(self, k: int = 3):
-        self.k = k
-        self.board_size = k * k
+    def __init__(self):
+        self.k = 3
+        self.board_size = 9
         
         self.AI = 1      # AI (X)
         self.OPPONENT = 2  # 对手 (O)
         self.EMPTY = 0
         
         self._build_state_space()
-        
+    
     def _build_state_space(self):
         """构建所有可达状态"""
         self.all_states = []
@@ -48,10 +71,9 @@ class TicTacToeEnv:
         self.n_states = len(self.all_states)
         self.n_actions = self.board_size
         
-        # 构建转移概率和奖励
+        # 构建转移概率和成本
         self.P = np.zeros((self.n_states, self.n_actions, self.n_states))
-        self.R = np.zeros((self.n_states, self.n_actions))  # 奖励，不是成本
-        
+        self.R = np.zeros((self.n_states, self.n_actions))  # 奖励
         self._build_transitions()
     
     def _get_current_player(self, board):
@@ -70,20 +92,16 @@ class TicTacToeEnv:
         for i in range(self.k):
             if all(board[i * self.k + j] == player for j in range(self.k)):
                 return True
-        
         # 列
         for j in range(self.k):
             if all(board[i * self.k + j] == player for i in range(self.k)):
                 return True
-        
         # 主对角线
         if all(board[i * self.k + i] == player for i in range(self.k)):
             return True
-        
         # 副对角线
         if all(board[i * self.k + (self.k - 1 - i)] == player for i in range(self.k)):
             return True
-        
         return False
     
     def _is_terminal(self, board):
@@ -106,7 +124,7 @@ class TicTacToeEnv:
     def _build_transitions(self):
         """构建转移概率矩阵"""
         for s_idx, board in enumerate(self.all_states):
-            # 终局状态：吸收态，奖励0
+            # 终局状态：吸收态
             if self._is_terminal(board):
                 for a in range(self.n_actions):
                     self.P[s_idx, a, s_idx] = 1.0
@@ -116,10 +134,10 @@ class TicTacToeEnv:
             current_player = self._get_current_player(board)
             
             for a in range(self.n_actions):
-                # 无效动作（位置已有棋子）：留在原地，负奖励惩罚
+                # 无效动作
                 if board[a] != self.EMPTY:
                     self.P[s_idx, a, s_idx] = 1.0
-                    self.R[s_idx, a] = -0.1  # 惩罚无效动作
+                    self.R[s_idx, a] = 0.0
                     continue
                 
                 if current_player == self.AI:
@@ -130,15 +148,14 @@ class TicTacToeEnv:
                     next_idx = self.state_to_idx[new_board]
                     self.P[s_idx, a, next_idx] = 1.0
                     
-                    # 如果新状态是终局，奖励就是终局奖励；否则为0（延迟奖励）
                     if self._is_terminal(new_board):
                         self.R[s_idx, a] = self._get_reward(new_board)
                     else:
                         self.R[s_idx, a] = 0.0
                 
                 else:
-                    # 对手回合：对手均匀随机选择空位
-                    empty_positions = [pos for pos in range(self.board_size) if board[pos] == self.EMPTY]
+                    # 对手回合：均匀随机选择空位
+                    empty_positions = [p for p in range(self.board_size) if board[p] == self.EMPTY]
                     prob_each = 1.0 / len(empty_positions)
                     
                     for pos in empty_positions:
@@ -148,11 +165,21 @@ class TicTacToeEnv:
                         next_idx = self.state_to_idx[new_board]
                         self.P[s_idx, a, next_idx] += prob_each
                     
-                    # 对手回合的即时奖励为0，奖励在终局时才给
                     self.R[s_idx, a] = 0.0
     
-    def render(self, board):
+    def to_mdp(self, gamma: float = 0.99) -> MDP:
+        """转换为标准 MDP 接口（成本 = -奖励）"""
+        return MDP(
+            n_states=self.n_states,
+            n_actions=self.n_actions,
+            gamma=gamma,
+            P=self.P,
+            C=-self.R  # 成本 = 负奖励
+        )
+    
+    def render(self, board_idx: int):
         """打印棋盘"""
+        board = self.all_states[board_idx]
         symbols = {self.EMPTY: '.', self.AI: 'X', self.OPPONENT: 'O'}
         for i in range(self.k):
             row = [symbols[board[i * self.k + j]] for j in range(self.k)]
@@ -160,81 +187,34 @@ class TicTacToeEnv:
         print()
 
 
-class StandardValueIteration:
-    """标准值迭代 - 最大化奖励"""
+def tictactoe_mdp(gamma: float = 0.99) -> MDP:
+    """
+    创建 TicTacToe MDP
     
-    def __init__(self, env, gamma=0.99, theta=1e-6):
-        self.env = env
-        self.gamma = gamma
-        self.theta = theta
-        self.V = np.zeros(env.n_states)
-        self.history = []
+    参数:
+        gamma: 折扣因子
+        
+    返回:
+        MDP 对象，可直接用于所有算法
+    """
+    env = TicTacToeEnv()
+    return env.to_mdp(gamma=gamma)
     
-    def _compute_best_value(self, s, V):
-        """计算状态s的最优值（最大化奖励）"""
-        best_value = float('-inf')
-        best_action = 0
-        
-        for a in range(self.env.n_actions):
-            value = 0.0
-            for next_s in range(self.env.n_states):
-                prob = self.env.P[s, a, next_s]
-                if prob > 0:
-                    value += prob * (self.env.R[s, a] + self.gamma * V[next_s])
-            
-            if value > best_value:
-                best_value = value
-                best_action = a
-        
-        return best_action, best_value
-    
-    def solve(self, max_iter=10000, verbose=True):
-        """求解最优策略"""
-        iteration = 0
-        self.history = []
-        
-        if verbose:
-            print("=" * 60)
-            print("标准值迭代求解井字棋")
-            print("=" * 60)
-            print(f"状态数: {self.env.n_states}")
-            print(f"动作数: {self.env.n_actions}")
-            print(f"折扣因子 γ: {self.gamma}")
-            print(f"收敛阈值 θ: {self.theta}")
-            print()
-        
-        while iteration < max_iter:
-            V_new = np.zeros(self.env.n_states)
-            delta = 0
-            
-            for s in range(self.env.n_states):
-                _, best_value = self._compute_best_value(s, self.V)
-                V_new[s] = best_value
-                delta = max(delta, abs(best_value - self.V[s]))
-            
-            self.history.append(delta)
-            self.V = V_new
-            
-            if verbose and (iteration % 10 == 0 or delta < self.theta):
-                print(f"迭代 {iteration:4d}: delta = {delta:.8f}")
-            
-            if delta < self.theta:
-                if verbose:
-                    print(f"\n✓ 收敛于第 {iteration} 次迭代")
-                break
-            
-            iteration += 1
-        
-        # 提取策略
-        policy = np.zeros(self.env.n_states, dtype=int)
-        for s in range(self.env.n_states):
-            policy[s], _ = self._compute_best_value(s, self.V)
-        
-        return policy, self.V, iteration, self.history
 
-
-def evaluate_policy(env, policy, n_games=100, verbose=True):
-    """评估策略"""
+def evaluate_policy_vs_random(policy: np.ndarray, n_games: int = 500, verbose: bool = True) -> Tuple[float, float, float]:
+    """
+    评估策略与随机对手对战的胜率
+    
+    参数:
+        policy: 策略数组，policy[state_idx] = action
+        n_games: 对局数
+        verbose: 是否打印结果
+        
+    返回:
+        (win_rate, lose_rate, draw_rate)
+    """
+    env = TicTacToeEnv()
+    
     wins = 0
     losses = 0
     draws = 0
@@ -254,9 +234,9 @@ def evaluate_policy(env, policy, n_games=100, verbose=True):
                     break
                 action = np.random.choice(empty)
             
-            new_board = list(board)
-            new_board[action] = current_player
-            board = tuple(new_board)
+            new_board_list = list(board)
+            new_board_list[action] = current_player
+            board = tuple(new_board_list)
         
         if env._check_win(board, env.AI):
             wins += 1
@@ -265,51 +245,104 @@ def evaluate_policy(env, policy, n_games=100, verbose=True):
         else:
             draws += 1
     
+    win_rate = wins / n_games * 100
+    lose_rate = losses / n_games * 100
+    draw_rate = draws / n_games * 100
+    
     if verbose:
-        print(f"\n策略评估 ({n_games} 局)")
-        print(f"  胜: {wins} ({wins/n_games*100:.1f}%)")
-        print(f"  负: {losses} ({losses/n_games*100:.1f}%)")
-        print(f"  平: {draws} ({draws/n_games*100:.1f}%)")
+        print(f"  胜率: {win_rate:.1f}% ({wins}/{n_games})")
+        print(f"  负率: {lose_rate:.1f}% ({losses}/{n_games})")
+        print(f"  平率: {draw_rate:.1f}% ({draws}/{n_games})")
     
-    return wins, losses, draws
+    return win_rate, lose_rate, draw_rate
 
 
-def play_game(env, policy):
-    """演示一局"""
-    board = tuple([env.EMPTY] * env.board_size)
+# ============================================================
+# 3. 主实验脚本
+# ============================================================
+
+def run_tictactoe_experiment():
+    """在 TicTacToe 上运行所有算法"""
     
-    print("\n新游戏：AI (X) vs 随机对手 (O)")
-    env.render(board)
+    print("="*70)
+    print("TicTacToe MDP 实验")
+    print("所有算法 vs 随机对手")
+    print("="*70)
     
-    while not env._is_terminal(board):
-        current_player = env._get_current_player(board)
-        state_idx = env.state_to_idx[board]
+    # 创建 MDP
+    mdp = tictactoe_mdp(gamma=0.99)
+    mdp.nS = mdp.n_states   # 添加别名
+    mdp.nA = mdp.n_actions  # 添加别名
+    mdp.shape = (1, mdp.n_states)  # 添加 shape 属性
+    print(f"\n环境信息:")
+    print(f"  状态数: {mdp.n_states}")
+    print(f"  动作数: {mdp.n_actions}")
+    print(f"  折扣因子 γ: {mdp.gamma}")
+    
+    # 定义算法
+    algorithms = {
+        'Value Iteration': ValueIterationAgent,
+        'RandomVI': RandomVIAgent,
+        'Influence Tree': InfluenceTreeAgent,
+        'CyclicVI': CyclicVIAgent,
+        'RPCyclicVI': RPCyclicVIAgent,
+        'Policy Iteration': PolicyIterationAgent,
+        'Q-Learning': QLearningAgent,
+    }
+    
+    results = {}
+    
+    for name, agent_class in algorithms.items():
+        print(f"\n{'='*50}")
+        print(f"运行 {name}...")
+        print(f"{'='*50}")
         
-        if current_player == env.AI:
-            action = policy[state_idx]
-            print(f"AI 下在位置 {action}")
+        start_time = time.time()
+        agent = agent_class(mdp)
+        
+        try:
+            if name == 'Q-Learning':
+                policy, values = agent.optimize(episodes=5000, max_steps_per_episode=20)
+            else:
+                policy, values = agent.optimize(theta=1e-6)
+            
+            runtime = time.time() - start_time
+            iterations = agent.round_num if hasattr(agent, 'round_num') else 5000
+            
+            print(f"  收敛时间: {runtime:.2f} 秒")
+            print(f"  迭代次数: {iterations}")
+            
+            # 评估策略
+            print(f"\n  策略评估 (500 局 vs 随机对手):")
+            win_rate, lose_rate, draw_rate = evaluate_policy_vs_random(policy, n_games=500)
+            
+            results[name] = {
+                'iterations': iterations,
+                'runtime': runtime,
+                'win_rate': win_rate,
+                'lose_rate': lose_rate,
+                'draw_rate': draw_rate
+            }
+            
+        except Exception as e:
+            print(f"  ❌ 错误: {e}")
+            results[name] = None
+    
+    # 打印汇总表格
+    print("\n" + "="*70)
+    print("实验结果汇总")
+    print("="*70)
+    print(f"{'Algorithm':<20} {'Iterations':<12} {'Time(s)':<10} {'Win Rate':<10}")
+    print("-"*70)
+    
+    for name, res in results.items():
+        if res:
+            print(f"{name:<20} {res['iterations']:<12} {res['runtime']:<10.2f} {res['win_rate']:<10.1f}%")
         else:
-            empty = [p for p in range(env.board_size) if board[p] == env.EMPTY]
-            action = np.random.choice(empty)
-            print(f"对手 下在位置 {action}")
-        
-        new_board = list(board)
-        new_board[action] = current_player
-        board = tuple(new_board)
-        env.render(board)
+            print(f"{name:<20} {'FAILED':<12} {'-':<10} {'-':<10}")
     
-    if env._check_win(board, env.AI):
-        print("🎉 AI 获胜！")
-    elif env._check_win(board, env.OPPONENT):
-        print("😢 AI 输了")
-    else:
-        print("🤝 平局")
+    return results
 
 
 if __name__ == "__main__":
-    env = TicTacToeEnv(k=3)
-    solver = StandardValueIteration(env, gamma=0.99, theta=1e-6)
-    policy, V, iterations, history = solver.solve(verbose=True)
-    
-    evaluate_policy(env, policy, n_games=500)
-    play_game(env, policy)
+    results = run_tictactoe_experiment()
