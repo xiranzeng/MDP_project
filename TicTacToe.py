@@ -8,7 +8,7 @@ from typing import Tuple, List, Dict
 from collections import deque, defaultdict
 
 from VI_approach1 import ValueIterationAgent
-from VI_approach2 import RandomVIAgent as RandomVIAgent
+from VI_approach2 import RandomVIAgent
 from InfluenceTree import InfluenceTreeAgent
 from approach4_CyclicVI import Agent as CyclicVIAgent
 from approach5_RPCyclicVI import Agent as RPCyclicVIAgent
@@ -260,30 +260,61 @@ def evaluate_policy_vs_random(policy: np.ndarray, n_games: int = 500, verbose: b
 # ============================================================
 # 3. 主实验脚本
 # ============================================================
+def analyze_nash_and_strategy(policy, env, algorithm_name):
+    """
+    针对 TicTacToe 分析：
+    1. 对于随机对手，AI 的最优策略（起点走法）
+    2. 理论 Nash 均衡：双方最优 -> 平局
+    """
+    print(f"\n{'='*60}")
+    print(f"{algorithm_name} - 策略与Nash均衡分析")
+    print(f"{'='*60}")
+
+    # --- 1. 针对随机对手的最优策略（起点走法）---
+    empty_board = tuple([env.EMPTY] * env.board_size)
+    start_idx = env.state_to_idx[empty_board]
+    best_start_action = policy[start_idx]
+    
+    print(f"1. 针对随机对手的最优策略 (算法找到):")
+    print(f"   空棋盘时 AI 的第一步下在位置: {best_start_action}")
+    
+    # 统计策略稳定性（胜率已在前面的 evaluate_policy_vs_random 中得到）
+    # 这里只做定性理论分析
+
+    # --- 2. 理论 Nash 均衡（双方最优）---
+    print(f"\n2. 理论上的 Nash 均衡 (双方都最优):")
+    print(f"   在标准 3x3 井字棋中，若双方都采用最优策略（极小化极大），")
+    print(f"   最终结果一定是平局。")
+    print(f"   这就是该博弈的 Nash 均衡值: 0（对先手而言，无法保证赢，只能保证不输）")
+    print(f"   算法找到的针对随机对手的策略是最大化胜率，但并非极小化极大策略，")
+    print(f"   因此不是严格意义上的博弈论 Nash 均衡。")
+    
+    # --- 3. 如果要看极小化极大下的 Nash 策略，可以给出一个简单提示 ---
+    print(f"\n3. 极小化极大下的 Nash 均衡策略特点（理论）:")
+    print(f"   先手最优第一步: 角或中心")
+    print(f"   后手最优第一步: 中心或角")
+    print(f"   完美对局 → 平局")
+    
+    return best_start_action
+
+
 
 def run_tictactoe_experiment():
-    """在 TicTacToe 上运行所有算法"""
-    
     print("="*70)
     print("TicTacToe MDP 实验")
-    print("所有算法 vs 随机对手")
+    print("所有算法 vs 随机对手 + Nash均衡分析")
     print("="*70)
     
-    # 创建 MDP
     mdp = tictactoe_mdp(gamma=0.99)
-    mdp.nS = mdp.n_states   # 添加别名
-    mdp.nA = mdp.n_actions  # 添加别名
-    mdp.shape = (1, mdp.n_states)  # 添加 shape 属性
-    print(f"\n环境信息:")
-    print(f"  状态数: {mdp.n_states}")
-    print(f"  动作数: {mdp.n_actions}")
-    print(f"  折扣因子 γ: {mdp.gamma}")
+    mdp.nS = mdp.n_states
+    mdp.nA = mdp.n_actions
+    mdp.shape = (1, mdp.n_states)
     
-    # 定义算法
+    # 原始环境（用于策略分析）
+    raw_env = TicTacToeEnv()
+    
     algorithms = {
         'Value Iteration': ValueIterationAgent,
-        'RandomVI': RandomVIAgent,
-        'Influence Tree': InfluenceTreeAgent,
         'CyclicVI': CyclicVIAgent,
         'RPCyclicVI': RPCyclicVIAgent,
         'Policy Iteration': PolicyIterationAgent,
@@ -307,41 +338,47 @@ def run_tictactoe_experiment():
                 policy, values = agent.optimize(theta=1e-6)
             
             runtime = time.time() - start_time
-            iterations = agent.round_num if hasattr(agent, 'round_num') else 5000
+            iterations = agent.round_num
             
             print(f"  收敛时间: {runtime:.2f} 秒")
             print(f"  迭代次数: {iterations}")
             
-            # 评估策略
+            # 评估胜率（已有函数）
             print(f"\n  策略评估 (500 局 vs 随机对手):")
             win_rate, lose_rate, draw_rate = evaluate_policy_vs_random(policy, n_games=500)
+            
+            # 新增：分析 Nash 均衡与策略
+            best_start = analyze_nash_and_strategy(policy, raw_env, name)
             
             results[name] = {
                 'iterations': iterations,
                 'runtime': runtime,
                 'win_rate': win_rate,
                 'lose_rate': lose_rate,
-                'draw_rate': draw_rate
+                'draw_rate': draw_rate,
+                'best_start': best_start
             }
             
         except Exception as e:
             print(f"  ❌ 错误: {e}")
             results[name] = None
     
-    # 打印汇总表格
+    # 打印汇总表格（可以增加一列 Best Start）
     print("\n" + "="*70)
-    print("实验结果汇总")
+    print("实验结果汇总（含Nash分析）")
     print("="*70)
-    print(f"{'Algorithm':<20} {'Iterations':<12} {'Time(s)':<10} {'Win Rate':<10}")
+    print(f"{'Algorithm':<20} {'Iter':<8} {'Time(s)':<8} {'Win%':<8} {'Best Start':<10}")
     print("-"*70)
-    
     for name, res in results.items():
         if res:
-            print(f"{name:<20} {res['iterations']:<12} {res['runtime']:<10.2f} {res['win_rate']:<10.1f}%")
+            print(f"{name:<20} {res['iterations']:<8} {res['runtime']:<8.2f} {res['win_rate']:<8.1f} {res['best_start']:<10}")
         else:
-            print(f"{name:<20} {'FAILED':<12} {'-':<10} {'-':<10}")
+            print(f"{name:<20} {'FAILED':<8}")
     
     return results
+
+
+
 
 
 if __name__ == "__main__":

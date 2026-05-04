@@ -119,8 +119,8 @@ if __name__ == "__main__":
     
     # 运行算法
     agent = ValueIterationAgent(mdp, gamma=0.99)
-    policy, V = agent.optimize(theta=1e-6)
+    policy, V = agent.optimize(theta=1e-4)
     
-    print(f"\n收敛迭代次数: {agent.round_num}")
-    print(f"策略形状: {policy.shape}")
+    #print(f"\n收敛迭代次数: {agent.round_num}")
+    #print(f"策略形状: {policy.shape}")
     print(f"值函数形状: {V.shape}")
